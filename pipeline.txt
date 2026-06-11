@@ -1,74 +1,110 @@
 pipeline {
     agent any
+
     tools {
         jdk 'jdk17'
-        nodejs 'node16'
+        nodejs 'Node18'
     }
+
     environment {
         SCANNER_HOME = tool 'sonar-scanner'
     }
+
     stages {
+
         stage('clean workspace') {
             steps {
                 cleanWs()
             }
         }
+
         stage('Checkout from Git') {
             steps {
-                git branch: 'main', url: '<URL>'
+                git branch: 'main', url: 'https://github.com/shirisha-1910/DevSecOps.git'
             }
         }
-        stage('SonarQube Analysis') {
+
+        stage('Sonarqube Analysis') {
             steps {
                 withSonarQubeEnv('sonar-server') {
-                    sh ''' 
-                    $SCANNER_HOME/bin/sonar-scanner -Dsonar.projectKey=Netflix
+                    sh '''
+                    $SCANNER_HOME/bin/sonar-scanner \
+                    -Dsonar.projectName=Netflix \
+                    -Dsonar.projectKey=Netflix
                     '''
                 }
             }
         }
-        stage('Quality Gate') {
+
+        stage('quality gate') {
             steps {
-                script {
-                    waitForQualityGate abortPipeline
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: false
                 }
             }
         }
+
         stage('Install Dependencies') {
             steps {
-                sh "npm install"
+                sh 'npm install'
             }
         }
-        stage('OWASP FS Scan') {
+
+        stage('OWASP FS SCAN') {
             steps {
-                dependencyCheck additionalArguments
-                dependencyCheckPublisher pattern
+                dependencyCheck(
+                    additionalArguments: '--scan ./ --disableYarnAudit --disableNodeAudit',
+                    odcInstallation: 'DP-Check'
+                )
+
+                dependencyCheckPublisher(
+                    pattern: '**/dependency-check-report.xml'
+                )
             }
         }
-        stage('TRIVY FS Scan') {
+
+        stage('TRIVY FS SCAN') {
             steps {
-                sh "trivy fs . > trivyfs.txt"
+                sh 'trivy fs . > trivyfs.txt'
             }
         }
+
         stage('Docker Build & Push') {
             steps {
-                script {
-                    withDockerRegistry(credentialsId: 'docker-credentials') {
-                        sh "docker build --build-arg TMDB_V3_API_KEY=<your-api-key> -t netflix ."
-                        sh "docker tag netflix sirishassss/netflix:latest"
-                        sh "docker push sirishassss/netflix:latest"
-                    }
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'docker',
+                        usernameVariable: 'DOCKER_USER',
+                        passwordVariable: 'DOCKER_PASS'
+                    )
+                ]) {
+                    sh '''
+                    echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+
+                    docker build \
+                    --build-arg TMDB_V3_API_KEY=dda09d7403c2af099ea7708bdca9e2e7 \
+                    -t netflix .
+
+                    docker tag netflix sirishassss/netflix:latest
+
+                    docker push sirishassss/netflix:latest
+                    '''
                 }
             }
         }
-        stage('TRIVY Image Scan') {
+
+        stage('TRIVY') {
             steps {
-                sh "trivy image sirishassss/netflix:latest > trivyimage.txt"
+                sh 'trivy image sirishassss/netflix:latest > trivyimage.txt'
             }
         }
+
         stage('Deploy to container') {
             steps {
-                sh 'docker run -d -p 8081:80 sirishassss/netflix:latest'
+                sh '''
+                docker rm -f netflix-container || true
+                docker run -d  -p 8081:80 sirishassss/netflix:latest
+                '''
             }
         }
     }
